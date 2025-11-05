@@ -52,11 +52,145 @@ export async function POST(req: NextRequest) {
       return await handleTicketCreation(payload);
     }
 
+    // Handle message shortcut (right-click message → "Create ticket")
+    if (payload.type === 'message_action' && payload.callback_id === 'create_ticket_from_message') {
+      return await handleMessageAction(payload);
+    }
+
     return NextResponse.json({});
   } catch (error) {
     console.error('Slack interaction error:', error);
     return NextResponse.json({ 
       error: 'Internal server error' 
+    }, { status: 500 });
+  }
+}
+
+async function handleMessageAction(payload: any) {
+  const message = payload.message;
+  const channelId = payload.channel.id;
+  const triggerId = payload.trigger_id;
+  const userId = payload.user.id;
+
+  try {
+    // Get message content
+    const messageText = message.text || '';
+    const messageUser = message.user;
+    const messageTs = message.ts;
+    const messageLink = `https://slack.com/archives/${channelId}/p${messageTs.replace('.', '')}`;
+
+    // Open modal with pre-filled content
+    await slackClient.views.open({
+      trigger_id: triggerId,
+      view: {
+        type: 'modal',
+        callback_id: 'create_ticket_modal',
+        title: {
+          type: 'plain_text',
+          text: 'Create IT Ticket',
+        },
+        submit: {
+          type: 'plain_text',
+          text: 'Create',
+        },
+        close: {
+          type: 'plain_text',
+          text: 'Cancel',
+        },
+        blocks: [
+          {
+            type: 'input',
+            block_id: 'title_block',
+            label: {
+              type: 'plain_text',
+              text: 'Title',
+            },
+            element: {
+              type: 'plain_text_input',
+              action_id: 'title',
+              initial_value: messageText.length > 100 ? messageText.substring(0, 97) + '...' : messageText,
+              placeholder: {
+                type: 'plain_text',
+                text: 'e.g., Printer on 3rd floor not working',
+              },
+            },
+          },
+          {
+            type: 'input',
+            block_id: 'description_block',
+            label: {
+              type: 'plain_text',
+              text: 'Description',
+            },
+            element: {
+              type: 'plain_text_input',
+              action_id: 'description',
+              multiline: true,
+              initial_value: `${messageText}\n\nOriginal message: ${messageLink}\nFrom: <@${messageUser}>`,
+              placeholder: {
+                type: 'plain_text',
+                text: 'Provide details about the issue...',
+              },
+            },
+            optional: true,
+          },
+          {
+            type: 'input',
+            block_id: 'priority_block',
+            label: {
+              type: 'plain_text',
+              text: 'Priority',
+            },
+            element: {
+              type: 'static_select',
+              action_id: 'priority',
+              initial_option: {
+                text: {
+                  type: 'plain_text',
+                  text: 'Medium',
+                },
+                value: 'medium',
+              },
+              options: [
+                {
+                  text: {
+                    type: 'plain_text',
+                    text: '⬇️ Low',
+                  },
+                  value: 'low',
+                },
+                {
+                  text: {
+                    type: 'plain_text',
+                    text: '➡️ Medium',
+                  },
+                  value: 'medium',
+                },
+                {
+                  text: {
+                    type: 'plain_text',
+                    text: '⬆️ High',
+                  },
+                  value: 'high',
+                },
+              ],
+            },
+          },
+        ],
+        private_metadata: JSON.stringify({
+          user_id: userId,
+          channel_id: channelId,
+          original_message_user: messageUser,
+          message_ts: messageTs,
+        }),
+      },
+    });
+
+    return NextResponse.json({});
+  } catch (error) {
+    console.error('Error handling message action:', error);
+    return NextResponse.json({ 
+      error: 'Failed to open ticket form' 
     }, { status: 500 });
   }
 }
