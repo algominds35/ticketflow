@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { WebClient } from '@slack/web-api';
-import { createClient } from '@/lib/supabase/server';
+import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 
 const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
 
@@ -209,8 +209,17 @@ async function handleTicketCreation(payload: any) {
   const channelId = metadata.channel_id;
 
   try {
-    // Get Supabase client (use service role to bypass RLS for initial setup)
-    const supabase = await createClient();
+    // Get Supabase client with service role to bypass RLS for Slack webhooks
+    const supabase = createSupabaseClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      }
+    );
     
     // Get or create organization
     let { data: org } = await supabase
