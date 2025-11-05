@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
               initial_option: {
                 text: {
                   type: 'plain_text',
-                  text: 'Medium',
+                  text: '➡️ Medium',
                 },
                 value: 'medium',
               },
