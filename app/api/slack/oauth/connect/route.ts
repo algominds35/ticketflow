@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
 
     const slackAuthUrl = new URL('https://slack.com/oauth/v2/authorize');
     slackAuthUrl.searchParams.set('client_id', process.env.SLACK_CLIENT_ID!);
-    slackAuthUrl.searchParams.set('scope', 'identity.basic,identity.email,identity.team');
+    slackAuthUrl.searchParams.set('user_scope', 'identity.basic,identity.email,identity.team');
     slackAuthUrl.searchParams.set('redirect_uri', `${process.env.NEXT_PUBLIC_APP_URL}/api/slack/oauth/connect-callback`);
     slackAuthUrl.searchParams.set('state', state);
 
