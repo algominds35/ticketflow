@@ -1,0 +1,231 @@
+import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
+import { WebClient } from '@slack/web-api';
+import { createClient } from '@/lib/supabase/server';
+
+const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
+
+// Verify request is from Slack
+function verifySlackRequest(req: NextRequest, body: string): boolean {
+  const timestamp = req.headers.get('x-slack-request-timestamp');
+  const slackSignature = req.headers.get('x-slack-signature');
+  
+  if (!timestamp || !slackSignature) return false;
+
+  // Reject old requests (prevent replay attacks)
+  const time = Math.floor(Date.now() / 1000);
+  if (Math.abs(time - parseInt(timestamp)) > 60 * 5) return false;
+
+  const sigBasestring = `v0:${timestamp}:${body}`;
+  const mySignature = `v0=${crypto
+    .createHmac('sha256', process.env.SLACK_SIGNING_SECRET!)
+    .update(sigBasestring)
+    .digest('hex')}`;
+
+  return crypto.timingSafeEqual(
+    Buffer.from(mySignature),
+    Buffer.from(slackSignature)
+  );
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.text();
+    
+    // Verify request is from Slack
+    if (!verifySlackRequest(req, body)) {
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+    }
+
+    // Parse the payload
+    const formData = new URLSearchParams(body);
+    const payloadStr = formData.get('payload');
+    
+    if (!payloadStr) {
+      return NextResponse.json({ error: 'No payload' }, { status: 400 });
+    }
+
+    const payload = JSON.parse(payloadStr);
+    
+    // Handle modal submission
+    if (payload.type === 'view_submission' && payload.view.callback_id === 'create_ticket_modal') {
+      return await handleTicketCreation(payload);
+    }
+
+    return NextResponse.json({});
+  } catch (error) {
+    console.error('Slack interaction error:', error);
+    return NextResponse.json({ 
+      error: 'Internal server error' 
+    }, { status: 500 });
+  }
+}
+
+async function handleTicketCreation(payload: any) {
+  const values = payload.view.state.values;
+  const metadata = JSON.parse(payload.view.private_metadata);
+  
+  // Extract form data
+  const title = values.title_block.title.value;
+  const description = values.description_block?.description?.value || '';
+  const priority = values.priority_block.priority.selected_option.value;
+  
+  const slackUserId = payload.user.id;
+  const slackTeamId = payload.team.id;
+  const channelId = metadata.channel_id;
+
+  try {
+    // Get Supabase client (use service role to bypass RLS for initial setup)
+    const supabase = await createClient();
+    
+    // Get or create organization
+    let { data: org } = await supabase
+      .from('organizations')
+      .select('*')
+      .eq('slack_team_id', slackTeamId)
+      .single();
+
+    if (!org) {
+      // Get workspace info
+      const { team } = await slackClient.team.info();
+      
+      // Create organization if doesn't exist
+      const { data: newOrg, error: orgError } = await supabase
+        .from('organizations')
+        .insert({
+          name: team?.name || 'Slack Workspace',
+          slack_team_id: slackTeamId,
+          plan: 'free',
+        })
+        .select()
+        .single();
+
+      if (orgError) {
+        console.error('Error creating organization:', orgError);
+        throw orgError;
+      }
+      org = newOrg;
+    }
+
+    // Get or create user
+    const { data: slackUserInfo } = await slackClient.users.info({
+      user: slackUserId,
+    });
+
+    // Find or create user in database
+    let { data: user } = await supabase
+      .from('users')
+      .select('*')
+      .eq('slack_user_id', slackUserId)
+      .single();
+
+    if (!user) {
+      // Create user if doesn't exist
+      const { data: newUser, error: createError } = await supabase
+        .from('users')
+        .insert({
+          org_id: org.id,
+          slack_user_id: slackUserId,
+          email: slackUserInfo?.user?.profile?.email || `${slackUserId}@slack.local`,
+          name: slackUserInfo?.user?.real_name || slackUserInfo?.user?.name || 'Unknown User',
+          role: 'user',
+        })
+        .select()
+        .single();
+
+      if (createError) {
+        console.error('Error creating user:', createError);
+        throw createError;
+      }
+      user = newUser;
+    }
+
+    // Create ticket
+    const { data: ticket, error: ticketError } = await supabase
+      .from('tickets')
+      .insert({
+        org_id: org.id,
+        title,
+        description,
+        priority,
+        status: 'open',
+        requester_id: user.id,
+        slack_channel_id: channelId,
+      })
+      .select()
+      .single();
+
+    if (ticketError) {
+      console.error('Error creating ticket:', ticketError);
+      throw ticketError;
+    }
+
+    // Send confirmation message to channel
+    const message = await slackClient.chat.postMessage({
+      channel: channelId,
+      text: `✅ Ticket #${ticket.id} created`,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*✅ Ticket Created*\n\n*#${ticket.id}* - ${title}`,
+          },
+        },
+        {
+          type: 'section',
+          fields: [
+            {
+              type: 'mrkdwn',
+              text: `*Priority:*\n${priority.charAt(0).toUpperCase() + priority.slice(1)}`,
+            },
+            {
+              type: 'mrkdwn',
+              text: `*Status:*\nOpen`,
+            },
+            {
+              type: 'mrkdwn',
+              text: `*Requester:*\n<@${slackUserId}>`,
+            },
+          ],
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: {
+                type: 'plain_text',
+                text: '🔗 View in Dashboard',
+              },
+              url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/tickets/${ticket.id}`,
+              action_id: 'view_ticket',
+            },
+          ],
+        },
+      ],
+    });
+
+    // Store the thread timestamp for future updates
+    if (message.ts) {
+      await supabase
+        .from('tickets')
+        .update({ slack_thread_ts: message.ts })
+        .eq('id', ticket.id);
+    }
+
+    // Return empty response (Slack requires this)
+    return NextResponse.json({});
+  } catch (error) {
+    console.error('Error handling ticket creation:', error);
+    
+    // Return error to user
+    return NextResponse.json({
+      response_action: 'errors',
+      errors: {
+        title_block: 'Failed to create ticket. Please try again.',
+      },
+    });
+  }
+}
+
