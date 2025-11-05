@@ -87,13 +87,13 @@ async function handleTicketCreation(payload: any) {
 
     if (!org) {
       // Get workspace info
-      const { team } = await slackClient.team.info();
+      const teamInfo = await slackClient.team.info();
       
       // Create organization if doesn't exist
       const { data: newOrg, error: orgError } = await supabase
         .from('organizations')
         .insert({
-          name: team?.name || 'Slack Workspace',
+          name: teamInfo.team?.name || 'Slack Workspace',
           slack_team_id: slackTeamId,
           plan: 'free',
         })
@@ -108,7 +108,7 @@ async function handleTicketCreation(payload: any) {
     }
 
     // Get or create user
-    const { data: slackUserInfo } = await slackClient.users.info({
+    const slackUserInfo = await slackClient.users.info({
       user: slackUserId,
     });
 
@@ -126,8 +126,8 @@ async function handleTicketCreation(payload: any) {
         .insert({
           org_id: org.id,
           slack_user_id: slackUserId,
-          email: slackUserInfo?.user?.profile?.email || `${slackUserId}@slack.local`,
-          name: slackUserInfo?.user?.real_name || slackUserInfo?.user?.name || 'Unknown User',
+          email: slackUserInfo.user?.profile?.email || `${slackUserId}@slack.local`,
+          name: slackUserInfo.user?.real_name || slackUserInfo.user?.name || 'Unknown User',
           role: 'user',
         })
         .select()
