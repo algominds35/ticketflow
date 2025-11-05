@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 import { Ticket, Comment, TicketStatus, TicketPriority } from './types'
 
 export async function getTickets(filters?: {
@@ -154,6 +155,34 @@ export async function createComment(comment: {
   if (error) {
     console.error('Error creating comment:', error)
     return null
+  }
+
+  // Post comment back to Slack thread if this is not an internal note
+  if (!comment.is_internal && data) {
+    try {
+      // Get ticket to find Slack thread info
+      const { data: ticket } = await supabase
+        .from('tickets')
+        .select('slack_channel_id, slack_thread_ts')
+        .eq('id', comment.ticket_id)
+        .single()
+
+      if (ticket?.slack_channel_id && ticket?.slack_thread_ts) {
+        // Post to Slack API endpoint
+        await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/slack/post-comment`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel: ticket.slack_channel_id,
+            thread_ts: ticket.slack_thread_ts,
+            text: `💬 **${data.user?.name || 'Someone'}** commented:\n\n${comment.content}`,
+          }),
+        })
+      }
+    } catch (err) {
+      console.error('Error posting to Slack:', err)
+      // Don't fail comment creation if Slack post fails
+    }
   }
 
   return data as Comment
