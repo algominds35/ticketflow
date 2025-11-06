@@ -255,32 +255,70 @@ async function handleTicketCreation(payload: any) {
       user: slackUserId,
     });
 
-    // Find or create user in database
+    // Get user email from Slack
+    const userEmail = slackUserInfo.user?.profile?.email || `${slackUserId}@slack.local`;
+
+    // Find user by email FIRST (globally, since email is unique)
     let { data: user } = await supabase
       .from('users')
       .select('*')
-      .eq('slack_user_id', slackUserId)
+      .eq('email', userEmail)
       .single();
 
-    if (!user) {
-      // Create user if doesn't exist
-      const { data: newUser, error: createError } = await supabase
+    if (user) {
+      // User exists - update their slack_user_id and org_id if needed
+      const updates: any = {};
+      if (!user.slack_user_id || user.slack_user_id !== slackUserId) {
+        updates.slack_user_id = slackUserId;
+      }
+      if (!user.org_id || user.org_id !== org.id) {
+        updates.org_id = org.id;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        const { data: updatedUser, error: updateError } = await supabase
+          .from('users')
+          .update(updates)
+          .eq('id', user.id)
+          .select()
+          .single();
+
+        if (updateError) {
+          console.error('Error updating user:', updateError);
+          throw updateError;
+        }
+        user = updatedUser;
+      }
+    } else {
+      // Check by slack_user_id as fallback
+      const { data: slackUser } = await supabase
         .from('users')
-        .insert({
-          org_id: org.id,
-          slack_user_id: slackUserId,
-          email: slackUserInfo.user?.profile?.email || `${slackUserId}@slack.local`,
-          name: slackUserInfo.user?.real_name || slackUserInfo.user?.name || 'Unknown User',
-          role: 'user',
-        })
-        .select()
+        .select('*')
+        .eq('slack_user_id', slackUserId)
         .single();
 
-      if (createError) {
-        console.error('Error creating user:', createError);
-        throw createError;
+      if (slackUser) {
+        user = slackUser;
+      } else {
+        // Create new user
+        const { data: newUser, error: createError } = await supabase
+          .from('users')
+          .insert({
+            org_id: org.id,
+            slack_user_id: slackUserId,
+            email: userEmail || `${slackUserId}@slack.local`,
+            name: slackUserInfo.user?.real_name || slackUserInfo.user?.name || 'Unknown User',
+            role: 'user',
+          })
+          .select()
+          .single();
+
+        if (createError) {
+          console.error('Error creating user:', createError);
+          throw createError;
+        }
+        user = newUser;
       }
-      user = newUser;
     }
 
     // Create ticket
