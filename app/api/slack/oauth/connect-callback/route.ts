@@ -77,12 +77,11 @@ export async function GET(req: NextRequest) {
       .single();
 
     if (existingUser) {
-      // Update the existing user to link auth_user_id
+      // Update the existing user to link auth_user_id (don't update email to avoid conflicts)
       const { error: updateError } = await supabase
         .from('users')
         .update({
           auth_user_id: auth_user_id,
-          email: email || existingUser.email,
         })
         .eq('id', existingUser.id);
 
